@@ -31,6 +31,45 @@ st.set_page_config(
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Theme. The query parameter also keeps the choice when the page is refreshed.
+# ──────────────────────────────────────────────────────────────────────────────
+
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = st.query_params.get("theme", "dark") != "light"
+
+def save_theme() -> None:
+    st.query_params["theme"] = "dark" if st.session_state.dark_mode else "light"
+
+THEMES = {
+    "dark": {
+        "page": "#0e1117", "surface": "#1a1f2e", "sidebar": "#151b28",
+        "text": "#f8fafc", "heading": "#e2e8f0", "muted": "#a7b5ca",
+        "line": "#344155", "soft": "#202a3b", "accent": "#7cb3ff",
+        "hero-light": "0",
+        "hero-text": "#ffffff", "hero-muted": "#afbdd2",
+        "badge": "#223a61", "metric": "#222a39", "image": "#12151f",
+        "success": "#4ade80", "success-bg": "#173628",
+        "error": "#fca5a5", "error-bg": "#3b2028",
+        "button-text": "#ffffff", "step-text": "#0f1929",
+    },
+    "light": {
+        "page": "#f6f8fc", "surface": "#ffffff", "sidebar": "#eef3fa",
+        "text": "#182338", "heading": "#1e293b", "muted": "#52627a",
+        "line": "#d7e0eb", "soft": "#e9eff7", "accent": "#245bbd",
+        "hero-light": "1",
+        "hero-text": "#172b50", "hero-muted": "#425776",
+        "badge": "#d9e7ff", "metric": "#f0f5fb", "image": "#e9eef6",
+        "success": "#166534", "success-bg": "#dcfce7",
+        "error": "#b42332", "error-bg": "#fee8e9",
+        "button-text": "#ffffff", "step-text": "#ffffff",
+    },
+}
+
+theme = THEMES["dark" if st.session_state.dark_mode else "light"]
+theme_variables = "; ".join(f"--{name}: {value}" for name, value in theme.items())
+st.markdown(f"<style>:root {{ {theme_variables}; color-scheme: {'dark' if st.session_state.dark_mode else 'light'}; }}</style>", unsafe_allow_html=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Custom CSS
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -42,6 +81,29 @@ st.markdown("""
 html, body, .stApp {
     font-family: 'Inter', sans-serif;
 }
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+    background: var(--page) !important;
+    color: var(--text);
+}
+[data-testid="stSidebar"], [data-testid="stSidebarContent"] {
+    background: var(--sidebar) !important;
+    color: var(--text);
+}
+.stApp p, .stApp li, .stApp label, .stApp h2, .stApp h3,
+[data-testid="stSidebar"] p, [data-testid="stSidebar"] label {
+    color: var(--text);
+}
+.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
+[data-testid="stSidebar"], [data-testid="stSidebarContent"],
+.hero, .card, .metric-item, .img-label, .status,
+.stApp p, .stApp li, .stApp label, .stApp h2, .stApp h3,
+.stApp button, .stApp input, .stApp textarea {
+    transition: background-color 0.3s ease, color 0.3s ease,
+                border-color 0.3s ease, box-shadow 0.3s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+    .stApp, .stApp * { transition-duration: 0.01ms !important; }
+}
 
 /* Hide default Streamlit branding */
 #MainMenu {visibility: hidden;}
@@ -50,13 +112,27 @@ header {visibility: hidden;}
 
 /* ── Hero header ────────────────────────────────────────────────────────── */
 .hero {
-    background: linear-gradient(135deg, #1a1f3a 0%, #0f1929 50%, #1a2940 100%);
+    background: linear-gradient(135deg, #1a1f3a, #0f1929 50%, #1a2940);
     border-radius: 16px;
     padding: 2.5rem 2rem;
     margin-bottom: 2rem;
-    border: 1px solid rgba(79, 139, 249, 0.15);
+    border: 1px solid var(--line);
     position: relative;
     overflow: hidden;
+    transition: border-color 0.3s ease;
+}
+.hero::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, #eaf2ff, #f6f9ff 55%, #dceaff);
+    opacity: var(--hero-light);
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+}
+.hero > * {
+    position: relative;
+    z-index: 1;
 }
 .hero::before {
     content: '';
@@ -71,20 +147,20 @@ header {visibility: hidden;}
 .hero h1 {
     font-size: 2.2rem;
     font-weight: 700;
-    color: #ffffff;
+    color: var(--hero-text);
     margin: 0 0 0.5rem 0;
     letter-spacing: -0.02em;
 }
 .hero p {
     font-size: 1.05rem;
-    color: #94a3b8;
+    color: var(--hero-muted);
     margin: 0;
     max-width: 600px;
 }
 .hero .badge {
     display: inline-block;
-    background: rgba(79, 139, 249, 0.15);
-    color: #7cb3ff;
+    background: var(--badge);
+    color: var(--accent);
     font-size: 0.75rem;
     font-weight: 600;
     padding: 0.25rem 0.75rem;
@@ -96,26 +172,26 @@ header {visibility: hidden;}
 
 /* ── Cards ──────────────────────────────────────────────────────────────── */
 .card {
-    background: #1a1f2e;
+    background: var(--surface);
     border-radius: 12px;
     padding: 1.5rem;
-    border: 1px solid rgba(255,255,255,0.06);
+    border: 1px solid var(--line);
     margin-bottom: 1rem;
-    transition: border-color 0.2s;
+    transition: background-color 0.3s ease, border-color 0.2s;
 }
 .card:hover {
-    border-color: rgba(79, 139, 249, 0.25);
+    border-color: var(--accent);
 }
 .card h3 {
     font-size: 1rem;
     font-weight: 600;
-    color: #e2e8f0;
+    color: var(--heading);
     margin: 0 0 0.75rem 0;
 }
 .card-label {
     font-size: 0.8rem;
     font-weight: 500;
-    color: #64748b;
+    color: var(--muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     margin-bottom: 0.5rem;
@@ -133,19 +209,19 @@ header {visibility: hidden;}
     margin-bottom: 0.5rem;
 }
 .status-success {
-    background: rgba(34, 197, 94, 0.12);
-    color: #4ade80;
-    border: 1px solid rgba(34,197,94,0.2);
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid var(--success);
 }
 .status-error {
-    background: rgba(239, 68, 68, 0.12);
-    color: #f87171;
-    border: 1px solid rgba(239,68,68,0.2);
+    background: var(--error-bg);
+    color: var(--error);
+    border: 1px solid var(--error);
 }
 .status-info {
-    background: rgba(79, 139, 249, 0.12);
-    color: #7cb3ff;
-    border: 1px solid rgba(79,139,249,0.2);
+    background: var(--badge);
+    color: var(--accent);
+    border: 1px solid var(--accent);
 }
 
 /* ── Metric display ─────────────────────────────────────────────────────── */
@@ -156,22 +232,22 @@ header {visibility: hidden;}
     margin: 0.75rem 0;
 }
 .metric-item {
-    background: rgba(255,255,255,0.03);
+    background: var(--metric);
     border-radius: 8px;
     padding: 0.6rem 1rem;
     min-width: 100px;
-    border: 1px solid rgba(255,255,255,0.05);
+    border: 1px solid var(--line);
 }
 .metric-item .label {
     font-size: 0.7rem;
-    color: #64748b;
+    color: var(--muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
 .metric-item .value {
     font-size: 1.1rem;
     font-weight: 600;
-    color: #e2e8f0;
+    color: var(--heading);
 }
 
 /* ── Step indicator ─────────────────────────────────────────────────────── */
@@ -188,14 +264,14 @@ header {visibility: hidden;}
     padding: 0.5rem 1rem;
     font-size: 0.82rem;
     font-weight: 500;
-    color: #64748b;
+    color: var(--muted);
     position: relative;
 }
 .step.active {
-    color: #7cb3ff;
+    color: var(--accent);
 }
 .step.done {
-    color: #4ade80;
+    color: var(--success);
 }
 .step .num {
     width: 24px;
@@ -209,16 +285,16 @@ header {visibility: hidden;}
     border: 2px solid currentColor;
 }
 .step.done .num {
-    background: #4ade80;
-    color: #0f1929;
-    border-color: #4ade80;
+    background: var(--success);
+    color: var(--step-text);
+    border-color: var(--success);
 }
 .step.active .num {
     background: rgba(79,139,249,0.2);
-    border-color: #7cb3ff;
+    border-color: var(--accent);
 }
 .step-arrow {
-    color: #334155;
+    color: var(--muted);
     margin: 0 0.25rem;
     font-size: 0.9rem;
 }
@@ -227,8 +303,8 @@ header {visibility: hidden;}
 .img-container {
     border-radius: 10px;
     overflow: hidden;
-    border: 1px solid rgba(255,255,255,0.06);
-    background: #12151f;
+    border: 1px solid var(--line);
+    background: var(--image);
 }
 .img-container img {
     width: 100%;
@@ -239,8 +315,8 @@ header {visibility: hidden;}
     padding: 0.6rem;
     font-size: 0.8rem;
     font-weight: 600;
-    color: #94a3b8;
-    background: rgba(255,255,255,0.02);
+    color: var(--muted);
+    background: var(--metric);
     text-transform: uppercase;
     letter-spacing: 0.05em;
 }
@@ -273,12 +349,96 @@ header {visibility: hidden;}
 }
 
 /* ── Streamlit component overrides ──────────────────────────────────────── */
+.stApp .card-label, .stApp .quiet-text, .stApp .footer-note {
+    color: var(--muted);
+}
+[data-testid="stFileUploaderDropzone"], [data-testid="stCameraInput"] > div,
+div[data-testid="stExpander"], div[data-baseweb="select"] > div,
+div[data-baseweb="input"] > div, div[data-baseweb="textarea"] > div {
+    background-color: var(--surface) !important;
+    color: var(--text) !important;
+    border-color: var(--line) !important;
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
+[data-testid="stCameraInputWebcamComponent"] > div {
+    background: var(--surface) !important;
+    color: var(--text) !important;
+    border-color: var(--line) !important;
+}
+[data-testid="stCameraInputWebcamComponent"] svg {
+    color: var(--muted) !important;
+}
+[data-testid="stCameraInputButton"] {
+    background: var(--surface) !important;
+    color: var(--text) !important;
+}
+[data-testid="stFileChip"] {
+    background: var(--metric) !important;
+    border: 1px solid var(--line);
+    color: var(--text) !important;
+    transition: background-color 0.3s ease, color 0.3s ease,
+                border-color 0.3s ease;
+}
+[data-testid="stFileChipName"] {
+    color: var(--text) !important;
+}
+[data-testid="stFileChipName"] + div {
+    color: var(--muted) !important;
+}
+[data-testid="stFileChip"] > div:first-child {
+    background: var(--text) !important;
+    color: var(--surface) !important;
+}
+.stApp [data-testid="stFileChipDeleteBtn"] button {
+    background: transparent !important;
+    color: var(--muted) !important;
+    border: 0 !important;
+}
+.stApp [data-testid="stFileChipDeleteBtn"] button:hover {
+    color: var(--accent) !important;
+}
+[data-testid="stFileChip"][aria-invalid="true"] {
+    background: var(--error-bg) !important;
+    border-color: var(--error);
+}
+[data-testid="stFileChip"][aria-invalid="true"] [data-testid="stFileChipName"],
+[data-testid="stFileChip"][aria-invalid="true"] [data-testid="stFileChipDeleteBtn"] button {
+    color: var(--error) !important;
+}
+label:has(input[role="switch"]:not(:checked)) > div:first-of-type {
+    background: var(--soft) !important;
+    border: 1px solid var(--line) !important;
+}
+label:has(input[role="switch"]:not(:checked)) > div:first-of-type > div {
+    background: var(--muted) !important;
+}
+[data-testid="stFileUploaderDropzone"] *, [data-testid="stCameraInput"] *,
+div[data-testid="stExpander"] *, div[data-baseweb="select"] *,
+div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea {
+    color: var(--text) !important;
+}
+[data-baseweb="popover"] > div, [role="listbox"] {
+    background: var(--surface) !important;
+    color: var(--text) !important;
+}
+[role="option"] { color: var(--text) !important; }
+[role="option"]:hover { background: var(--soft) !important; }
+.stApp button:not([data-testid="stBaseButton-primary"]),
+[data-testid="stSidebar"] button {
+    background-color: var(--surface);
+    color: var(--text);
+    border-color: var(--line);
+}
+.stApp button:not([data-testid="stBaseButton-primary"]):hover,
+[data-testid="stSidebar"] button:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
 .stFileUploader > div {
     border-radius: 12px !important;
 }
 div[data-testid="stExpander"] {
     border-radius: 12px !important;
-    border-color: rgba(255,255,255,0.06) !important;
 }
 .stDownloadButton > button {
     width: 100%;
@@ -287,6 +447,7 @@ div[data-testid="stExpander"] {
     font-weight: 600 !important;
     background: linear-gradient(135deg, #4F8BF9, #3b6fd4) !important;
     border: none !important;
+    color: var(--button-text) !important;
     transition: transform 0.15s, box-shadow 0.15s !important;
 }
 .stDownloadButton > button:hover {
@@ -297,12 +458,17 @@ div[data-testid="stExpander"] {
     border-radius: 10px !important;
     font-weight: 600 !important;
 }
+.stButton > button[data-testid="stBaseButton-primary"] {
+    color: #ffffff !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Hero header
 # ──────────────────────────────────────────────────────────────────────────────
+
+st.toggle("🌙 Dark mode", key="dark_mode", on_change=save_theme)
 
 st.markdown("""
 <div class="hero">
@@ -392,7 +558,7 @@ if source is None:
     <div class="card" style="text-align:center; padding:3rem 2rem;">
         <p style="font-size:2.5rem; margin:0;">📷</p>
         <h3 style="margin:0.5rem 0 0.25rem 0;">No image uploaded yet</h3>
-        <p style="color:#64748b; font-size:0.9rem; margin:0;">
+        <p class="quiet-text" style="font-size:0.9rem; margin:0;">
             Drag & drop a photo of a document above, or snap one with your camera.
         </p>
     </div>
@@ -513,7 +679,7 @@ if not result.success:
     st.markdown("""
     <div class="card">
         <h3>💡 Tips to improve detection</h3>
-        <ul style="color:#94a3b8; font-size:0.9rem; line-height:1.8;">
+        <ul style="font-size:0.9rem; line-height:1.8;">
             <li>Place the document on a <strong>contrasting background</strong> (dark desk, colored mat).</li>
             <li>Ensure <strong>even lighting</strong> — avoid harsh shadows across the page.</li>
             <li>Keep the <strong>entire document visible</strong> within the frame.</li>
@@ -631,7 +797,7 @@ if show_pipeline and result.detection and result.detection.debug_images:
 
 st.markdown("---")
 st.markdown(
-    '<p style="text-align:center; color:#475569; font-size:0.8rem;">'
+    '<p class="footer-note" style="text-align:center; font-size:0.8rem;">'
     'Built with OpenCV, Streamlit & ❤️ for CP461 — Introduction to Computer Vision'
     '</p>',
     unsafe_allow_html=True,

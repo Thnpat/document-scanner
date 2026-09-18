@@ -15,6 +15,7 @@ Built for **CP461 — Introduction to Computer Vision** (Semester 1/2026).
 - **Post-processing Modes** — Original color, grayscale, B&W scanned look, or sharpened
 - **Pipeline Visualization** — View intermediate processing stages (edges, contours, keypoints)
 - **Mobile Responsive** — Camera capture support + responsive layout for phone use
+- **Light & Dark Mode** — Switch themes with smooth color transitions; the selected mode survives page refreshes
 - **One-click Download** — Export the scanned document as PNG
 
 ## 🛠️ Tech Stack
