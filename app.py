@@ -1,14 +1,9 @@
-"""
-Document Scanner & Perspective Rectifier
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Streamlit web application for CP461 — Introduction to Computer Vision.
-
-Upload a photo of a tilted document, and this app will detect its corners
-and warp it to a clean, flat top-down A4 perspective.
-"""
+"""Production Streamlit interface for the document scanner."""
 
 from __future__ import annotations
 
+from html import escape
+import base64
 import io
 import logging
 import os
@@ -16,799 +11,411 @@ import time
 
 import cv2
 import numpy as np
-import streamlit as st
 from PIL import Image
+import streamlit as st
 
-from scanner.pipeline import run_full_pipeline
+from frontend import (BULB_ICON, CORNER_ICON, DOCUMENT_ICON, UPLOAD_ICON,
+                      load_styles, render_brand, render_markup,
+                      render_panel_heading, render_status, render_stepper,
+                      render_tips)
+from scanner.pipeline import enhance_scan, run_full_pipeline
+
+
+st.set_page_config(page_title="DocScan — Document Scanner", page_icon="📄",
+                   layout="wide", initial_sidebar_state="collapsed")
 
 if os.getenv("DOCSCAN_DEBUG") == "1":
     scanner_logger = logging.getLogger("scanner.pipeline")
     scanner_logger.setLevel(logging.DEBUG)
     if not scanner_logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
-        scanner_logger.addHandler(handler)
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        scanner_logger.addHandler(console_handler)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Page config
-# ──────────────────────────────────────────────────────────────────────────────
 
-st.set_page_config(
-    page_title="DocScan — Document Scanner",
-    page_icon="📄",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+ENHANCEMENT_LABELS = {
+    "bw_scan": "B&W Scan",
+    "original": "Color",
+    "grayscale": "Grayscale",
+    "sharpen": "Sharpened",
+}
+METHOD_LABELS = {"contour": "Contour", "frame": "Full frame", "orb": "ORB"}
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Theme. The query parameter also keeps the choice when the page is refreshed.
-# ──────────────────────────────────────────────────────────────────────────────
 
-if "dark_mode" not in st.session_state:
-    st.session_state.dark_mode = st.query_params.get("theme", "dark") != "light"
+def initialize_state() -> None:
+    defaults = {
+        "dark_mode": st.query_params.get("theme", "dark") != "light",
+        "source_bytes": None,
+        "source_name": "",
+        "source_type": "",
+        "picker_open": False,
+        "show_camera": False,
+        "picker_generation": 0,
+        "result": None,
+        "scan_error": None,
+        "elapsed": None,
+        "diagnostics": "",
+        "enhance_mode": "bw_scan",
+        "rendered_mode": "bw_scan",
+        "use_a4_ratio": True,
+        "is_processing": False,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
 
 def save_theme() -> None:
     st.query_params["theme"] = "dark" if st.session_state.dark_mode else "light"
 
-THEMES = {
-    "dark": {
-        "page": "#0e1117", "surface": "#1a1f2e", "sidebar": "#151b28",
-        "text": "#f8fafc", "heading": "#e2e8f0", "muted": "#a7b5ca",
-        "line": "#344155", "soft": "#202a3b", "accent": "#7cb3ff",
-        "hero-light": "0",
-        "hero-text": "#ffffff", "hero-muted": "#afbdd2",
-        "badge": "#223a61", "metric": "#222a39", "image": "#12151f",
-        "success": "#4ade80", "success-bg": "#173628",
-        "error": "#fca5a5", "error-bg": "#3b2028",
-        "button-text": "#ffffff", "step-text": "#0f1929",
-    },
-    "light": {
-        "page": "#f6f8fc", "surface": "#ffffff", "sidebar": "#eef3fa",
-        "text": "#182338", "heading": "#1e293b", "muted": "#52627a",
-        "line": "#d7e0eb", "soft": "#e9eff7", "accent": "#245bbd",
-        "hero-light": "1",
-        "hero-text": "#172b50", "hero-muted": "#425776",
-        "badge": "#d9e7ff", "metric": "#f0f5fb", "image": "#e9eef6",
-        "success": "#166534", "success-bg": "#dcfce7",
-        "error": "#b42332", "error-bg": "#fee8e9",
-        "button-text": "#ffffff", "step-text": "#ffffff",
-    },
-}
 
-theme = THEMES["dark" if st.session_state.dark_mode else "light"]
-theme_variables = "; ".join(f"--{name}: {value}" for name, value in theme.items())
-st.markdown(f"<style>:root {{ {theme_variables}; color-scheme: {'dark' if st.session_state.dark_mode else 'light'}; }}</style>", unsafe_allow_html=True)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Custom CSS
-# ──────────────────────────────────────────────────────────────────────────────
-
-st.markdown("""
-<style>
-/* ── Global ─────────────────────────────────────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
-html, body, .stApp {
-    font-family: 'Inter', sans-serif;
-}
-.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
-    background: var(--page) !important;
-    color: var(--text);
-}
-[data-testid="stSidebar"], [data-testid="stSidebarContent"] {
-    background: var(--sidebar) !important;
-    color: var(--text);
-}
-.stApp p, .stApp li, .stApp label, .stApp h2, .stApp h3,
-[data-testid="stSidebar"] p, [data-testid="stSidebar"] label {
-    color: var(--text);
-}
-.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"],
-[data-testid="stSidebar"], [data-testid="stSidebarContent"],
-.hero, .card, .metric-item, .img-label, .status,
-.stApp p, .stApp li, .stApp label, .stApp h2, .stApp h3,
-.stApp button, .stApp input, .stApp textarea {
-    transition: background-color 0.3s ease, color 0.3s ease,
-                border-color 0.3s ease, box-shadow 0.3s ease;
-}
-@media (prefers-reduced-motion: reduce) {
-    .stApp, .stApp * { transition-duration: 0.01ms !important; }
-}
-
-/* Hide default Streamlit branding */
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
-
-/* ── Hero header ────────────────────────────────────────────────────────── */
-.hero {
-    background: linear-gradient(135deg, #1a1f3a, #0f1929 50%, #1a2940);
-    border-radius: 16px;
-    padding: 2.5rem 2rem;
-    margin-bottom: 2rem;
-    border: 1px solid var(--line);
-    position: relative;
-    overflow: hidden;
-    transition: border-color 0.3s ease;
-}
-.hero::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(135deg, #eaf2ff, #f6f9ff 55%, #dceaff);
-    opacity: var(--hero-light);
-    transition: opacity 0.3s ease;
-    pointer-events: none;
-}
-.hero > * {
-    position: relative;
-    z-index: 1;
-}
-.hero::before {
-    content: '';
-    position: absolute;
-    top: -50%;
-    right: -20%;
-    width: 400px;
-    height: 400px;
-    border-radius: 50%;
-    background: radial-gradient(circle, rgba(79,139,249,0.08) 0%, transparent 70%);
-}
-.hero h1 {
-    font-size: 2.2rem;
-    font-weight: 700;
-    color: var(--hero-text);
-    margin: 0 0 0.5rem 0;
-    letter-spacing: -0.02em;
-}
-.hero p {
-    font-size: 1.05rem;
-    color: var(--hero-muted);
-    margin: 0;
-    max-width: 600px;
-}
-.hero .badge {
-    display: inline-block;
-    background: var(--badge);
-    color: var(--accent);
-    font-size: 0.75rem;
-    font-weight: 600;
-    padding: 0.25rem 0.75rem;
-    border-radius: 9999px;
-    margin-bottom: 0.75rem;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-}
-
-/* ── Cards ──────────────────────────────────────────────────────────────── */
-.card {
-    background: var(--surface);
-    border-radius: 12px;
-    padding: 1.5rem;
-    border: 1px solid var(--line);
-    margin-bottom: 1rem;
-    transition: background-color 0.3s ease, border-color 0.2s;
-}
-.card:hover {
-    border-color: var(--accent);
-}
-.card h3 {
-    font-size: 1rem;
-    font-weight: 600;
-    color: var(--heading);
-    margin: 0 0 0.75rem 0;
-}
-.card-label {
-    font-size: 0.8rem;
-    font-weight: 500;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 0.5rem;
-}
-
-/* ── Status badges ──────────────────────────────────────────────────────── */
-.status {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.82rem;
-    font-weight: 500;
-    padding: 0.35rem 0.85rem;
-    border-radius: 8px;
-    margin-bottom: 0.5rem;
-}
-.status-success {
-    background: var(--success-bg);
-    color: var(--success);
-    border: 1px solid var(--success);
-}
-.status-error {
-    background: var(--error-bg);
-    color: var(--error);
-    border: 1px solid var(--error);
-}
-.status-info {
-    background: var(--badge);
-    color: var(--accent);
-    border: 1px solid var(--accent);
-}
-
-/* ── Metric display ─────────────────────────────────────────────────────── */
-.metric-row {
-    display: flex;
-    gap: 1rem;
-    flex-wrap: wrap;
-    margin: 0.75rem 0;
-}
-.metric-item {
-    background: var(--metric);
-    border-radius: 8px;
-    padding: 0.6rem 1rem;
-    min-width: 100px;
-    border: 1px solid var(--line);
-}
-.metric-item .label {
-    font-size: 0.7rem;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-.metric-item .value {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: var(--heading);
-}
-
-/* ── Step indicator ─────────────────────────────────────────────────────── */
-.steps {
-    display: flex;
-    gap: 0;
-    margin: 1.5rem 0;
-    flex-wrap: wrap;
-}
-.step {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    font-size: 0.82rem;
-    font-weight: 500;
-    color: var(--muted);
-    position: relative;
-}
-.step.active {
-    color: var(--accent);
-}
-.step.done {
-    color: var(--success);
-}
-.step .num {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.72rem;
-    font-weight: 700;
-    border: 2px solid currentColor;
-}
-.step.done .num {
-    background: var(--success);
-    color: var(--step-text);
-    border-color: var(--success);
-}
-.step.active .num {
-    background: rgba(79,139,249,0.2);
-    border-color: var(--accent);
-}
-.step-arrow {
-    color: var(--muted);
-    margin: 0 0.25rem;
-    font-size: 0.9rem;
-}
-
-/* ── Image containers ───────────────────────────────────────────────────── */
-.img-container {
-    border-radius: 10px;
-    overflow: hidden;
-    border: 1px solid var(--line);
-    background: var(--image);
-}
-.img-container img {
-    width: 100%;
-    display: block;
-}
-.img-label {
-    text-align: center;
-    padding: 0.6rem;
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: var(--muted);
-    background: var(--metric);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
-/* ── Mobile responsiveness ──────────────────────────────────────────────── */
-@media (max-width: 768px) {
-    .hero {
-        padding: 1.5rem 1.25rem;
-    }
-    .hero h1 {
-        font-size: 1.5rem;
-    }
-    .hero p {
-        font-size: 0.92rem;
-    }
-    .metric-row {
-        gap: 0.5rem;
-    }
-    .metric-item {
-        min-width: 80px;
-        padding: 0.4rem 0.75rem;
-    }
-    .steps {
-        flex-direction: column;
-        gap: 0.25rem;
-    }
-    .step-arrow {
-        display: none;
-    }
-}
-
-/* ── Streamlit component overrides ──────────────────────────────────────── */
-.stApp .card-label, .stApp .quiet-text, .stApp .footer-note {
-    color: var(--muted);
-}
-[data-testid="stFileUploaderDropzone"], [data-testid="stCameraInput"] > div,
-div[data-testid="stExpander"], div[data-baseweb="select"] > div,
-div[data-baseweb="input"] > div, div[data-baseweb="textarea"] > div {
-    background-color: var(--surface) !important;
-    color: var(--text) !important;
-    border-color: var(--line) !important;
-    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
-}
-[data-testid="stCameraInputWebcamComponent"] > div {
-    background: var(--surface) !important;
-    color: var(--text) !important;
-    border-color: var(--line) !important;
-}
-[data-testid="stCameraInputWebcamComponent"] svg {
-    color: var(--muted) !important;
-}
-[data-testid="stCameraInputButton"] {
-    background: var(--surface) !important;
-    color: var(--text) !important;
-}
-[data-testid="stFileChip"] {
-    background: var(--metric) !important;
-    border: 1px solid var(--line);
-    color: var(--text) !important;
-    transition: background-color 0.3s ease, color 0.3s ease,
-                border-color 0.3s ease;
-}
-[data-testid="stFileChipName"] {
-    color: var(--text) !important;
-}
-[data-testid="stFileChipName"] + div {
-    color: var(--muted) !important;
-}
-[data-testid="stFileChip"] > div:first-child {
-    background: var(--text) !important;
-    color: var(--surface) !important;
-}
-.stApp [data-testid="stFileChipDeleteBtn"] button {
-    background: transparent !important;
-    color: var(--muted) !important;
-    border: 0 !important;
-}
-.stApp [data-testid="stFileChipDeleteBtn"] button:hover {
-    color: var(--accent) !important;
-}
-[data-testid="stFileChip"][aria-invalid="true"] {
-    background: var(--error-bg) !important;
-    border-color: var(--error);
-}
-[data-testid="stFileChip"][aria-invalid="true"] [data-testid="stFileChipName"],
-[data-testid="stFileChip"][aria-invalid="true"] [data-testid="stFileChipDeleteBtn"] button {
-    color: var(--error) !important;
-}
-label:has(input[role="switch"]:not(:checked)) > div:first-of-type {
-    background: var(--soft) !important;
-    border: 1px solid var(--line) !important;
-}
-label:has(input[role="switch"]:not(:checked)) > div:first-of-type > div {
-    background: var(--muted) !important;
-}
-[data-testid="stFileUploaderDropzone"] *, [data-testid="stCameraInput"] *,
-div[data-testid="stExpander"] *, div[data-baseweb="select"] *,
-div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea {
-    color: var(--text) !important;
-}
-[data-baseweb="popover"] > div, [role="listbox"] {
-    background: var(--surface) !important;
-    color: var(--text) !important;
-}
-[role="option"] { color: var(--text) !important; }
-[role="option"]:hover { background: var(--soft) !important; }
-.stApp button:not([data-testid="stBaseButton-primary"]),
-[data-testid="stSidebar"] button {
-    background-color: var(--surface);
-    color: var(--text);
-    border-color: var(--line);
-}
-.stApp button:not([data-testid="stBaseButton-primary"]):hover,
-[data-testid="stSidebar"] button:hover {
-    color: var(--accent);
-    border-color: var(--accent);
-}
-.stFileUploader > div {
-    border-radius: 12px !important;
-}
-div[data-testid="stExpander"] {
-    border-radius: 12px !important;
-}
-.stDownloadButton > button {
-    width: 100%;
-    border-radius: 10px !important;
-    padding: 0.6rem 1.5rem !important;
-    font-weight: 600 !important;
-    background: linear-gradient(135deg, #4F8BF9, #3b6fd4) !important;
-    border: none !important;
-    color: var(--button-text) !important;
-    transition: transform 0.15s, box-shadow 0.15s !important;
-}
-.stDownloadButton > button:hover {
-    transform: translateY(-1px) !important;
-    box-shadow: 0 4px 20px rgba(79,139,249,0.3) !important;
-}
-.stButton > button {
-    border-radius: 10px !important;
-    font-weight: 600 !important;
-}
-.stButton > button[data-testid="stBaseButton-primary"] {
-    color: #ffffff !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Hero header
-# ──────────────────────────────────────────────────────────────────────────────
-
-st.toggle("🌙 Dark mode", key="dark_mode", on_change=save_theme)
-
-st.markdown("""
-<div class="hero">
-    <div class="badge">CP461 · Computer Vision</div>
-    <h1>📄 Document Scanner</h1>
-    <p>Upload a photo of a tilted document and instantly get a clean,
-       flat top-down scan — powered by ORB features, RANSAC homography,
-       and adaptive edge detection.</p>
-</div>
-""", unsafe_allow_html=True)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Step indicator
-# ──────────────────────────────────────────────────────────────────────────────
-
-def render_steps(current: int) -> None:
-    """Render the pipeline step indicators. *current* is 0-based."""
-    labels = ["Upload", "Detect", "Rectify", "Enhance"]
-    parts = []
-    for i, label in enumerate(labels):
-        cls = "done" if i < current else ("active" if i == current else "")
-        icon = "✓" if i < current else str(i + 1)
-        parts.append(f'<span class="step {cls}"><span class="num">{icon}</span>{label}</span>')
-        if i < len(labels) - 1:
-            parts.append('<span class="step-arrow">→</span>')
-    st.markdown(f'<div class="steps">{"".join(parts)}</div>', unsafe_allow_html=True)
+def reset_scan() -> None:
+    """Increment widget keys so an earlier upload cannot reappear on rerun."""
+    st.session_state.source_bytes = None
+    st.session_state.source_name = ""
+    st.session_state.source_type = ""
+    st.session_state.result = None
+    st.session_state.scan_error = None
+    st.session_state.elapsed = None
+    st.session_state.diagnostics = ""
+    st.session_state.enhance_mode = "bw_scan"
+    st.session_state.rendered_mode = "bw_scan"
+    st.session_state.use_a4_ratio = True
+    st.session_state.is_processing = False
+    st.session_state.picker_open = False
+    st.session_state.show_camera = False
+    st.session_state.picker_generation += 1
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────────────────────
+def open_picker() -> None:
+    st.session_state.picker_open = True
+    st.session_state.show_camera = False
+    st.session_state.picker_generation += 1
 
-def load_image(source) -> np.ndarray | None:
-    """Read an uploaded file or camera capture into a BGR numpy array."""
+
+def toggle_camera() -> None:
+    st.session_state.show_camera = not st.session_state.show_camera
+
+
+def request_scan() -> None:
+    st.session_state.is_processing = True
+
+
+def load_image(data: bytes | None) -> np.ndarray | None:
+    if not data:
+        return None
     try:
-        file_bytes = np.frombuffer(source.getvalue(), dtype=np.uint8)
-        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        return img
-    except Exception:
+        return cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    except cv2.error:
         return None
 
 
-def to_pil(bgr: np.ndarray) -> Image.Image:
-    """Convert a BGR numpy image to a PIL Image (RGB)."""
-    return Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+def to_pil(image: np.ndarray) -> Image.Image:
+    return Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
 
 
-def to_download_bytes(bgr: np.ndarray, fmt: str = "png") -> bytes:
-    """Encode a BGR image to bytes for download."""
-    pil = to_pil(bgr)
-    buf = io.BytesIO()
-    pil.save(buf, format=fmt.upper(), quality=95)
-    return buf.getvalue()
+def preview_image(image: np.ndarray) -> Image.Image:
+    """Bound display size without changing the scan or downloaded output."""
+    preview = to_pil(image)
+    preview.thumbnail((720, 440), Image.Resampling.LANCZOS)
+    return preview
 
 
-PREVIEW_WIDTH = 560
+def to_download_bytes(image: np.ndarray) -> bytes:
+    buffer = io.BytesIO()
+    to_pil(image).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Upload section
-# ──────────────────────────────────────────────────────────────────────────────
+def thumbnail_uri(image: np.ndarray) -> str:
+    thumbnail = to_pil(image)
+    thumbnail.thumbnail((96, 96), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    thumbnail.save(buffer, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
-render_steps(0)
 
-upload_col, camera_col = st.columns([3, 2], gap="large")
+def render_header() -> None:
+    with st.container(key="app_header"):
+        brand_col, theme_col = st.columns([4, 1], vertical_alignment="center")
+        with brand_col:
+            render_brand()
+        with theme_col:
+            st.toggle("Dark mode", key="dark_mode", on_change=save_theme)
 
-with upload_col:
-    st.markdown('<p class="card-label">📁 Upload an image</p>', unsafe_allow_html=True)
-    uploaded = st.file_uploader(
-        "Upload a document photo",
-        type=["jpg", "jpeg", "png", "bmp", "webp"],
-        label_visibility="collapsed",
-    )
 
-with camera_col:
-    st.markdown('<p class="card-label">📸 Or use your camera</p>', unsafe_allow_html=True)
-    camera = st.camera_input(
-        "Take a photo",
-        label_visibility="collapsed",
-    )
+def render_picker() -> None:
+    with st.container(key="workspace_card"):
+        with st.container(key="upload_dropzone"):
+            render_markup(f"""
+            <div class="dropzone-icon">{UPLOAD_ICON}</div>
+            <h2 class="dropzone-title">Upload a document photo</h2>
+            <p class="dropzone-subtitle">Drag and drop your file here, or click to browse</p>
+            <div class="format-pills">
+              <span class="format-pill">JPG</span><span class="format-pill">PNG</span>
+              <span class="format-pill">WEBP</span><span class="format-pill">BMP</span>
+              <span class="format-pill">MAX 10MB</span>
+            </div>
+            """)
+            generation = st.session_state.picker_generation
+            with st.container(key="upload_actions"):
+                uploaded = st.file_uploader("Browse Files",
+                                            type=["jpg", "jpeg", "png", "bmp", "webp"],
+                                            key=f"upload_{generation}",
+                                            label_visibility="collapsed")
+                st.button("Use Webcam", key="webcam_action", icon=":material/photo_camera:",
+                          on_click=toggle_camera)
+            camera = None
+            if st.session_state.show_camera:
+                with st.container(key="camera_area"):
+                    camera = st.camera_input("Take a document photo", key=f"camera_{generation}")
+            source = uploaded or camera
+            if source is not None:
+                st.session_state.source_bytes = source.getvalue()
+                st.session_state.source_name = source.name or "Camera photo"
+                st.session_state.source_type = source.type or "image/jpeg"
+                st.session_state.result = None
+                st.session_state.scan_error = None
+                st.session_state.elapsed = None
+                st.session_state.diagnostics = ""
+                st.session_state.picker_open = False
+                st.session_state.show_camera = False
+                st.rerun()
+    if st.session_state.source_bytes is not None:
+        st.button("Cancel replacement", on_click=lambda: setattr(st.session_state, "picker_open", False))
 
-# Pick whichever source is available (prefer new upload over camera)
-source = uploaded or camera
 
-if source is None:
-    st.markdown("""
-    <div class="card" style="text-align:center; padding:3rem 2rem;">
-        <p style="font-size:2.5rem; margin:0;">📷</p>
-        <h3 style="margin:0.5rem 0 0.25rem 0;">No image uploaded yet</h3>
-        <p class="quiet-text" style="font-size:0.9rem; margin:0;">
-            Drag & drop a photo of a document above, or snap one with your camera.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()
+def render_selected_summary(image: np.ndarray) -> None:
+    height, width = image.shape[:2]
+    size_kb = len(st.session_state.source_bytes) / 1024
+    file_name = escape(st.session_state.source_name)
+    file_type = escape(st.session_state.source_type)
+    thumbnail = thumbnail_uri(image)
+    with st.container(key="selected_card"):
+        render_markup(f"""
+        <div class="selected-summary"><div class="selected-file">
+          <img class="selected-thumbnail" src="{thumbnail}" alt="Selected document thumbnail"/><div>
+          <strong>{file_name}</strong>
+          <p>{width} × {height} px &nbsp;·&nbsp; {size_kb:.0f} KB &nbsp;·&nbsp; {file_type}</p>
+        </div></div><span class="meta-pill selected-ready">Ready to scan</span></div>
+        """)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Load image
-# ──────────────────────────────────────────────────────────────────────────────
 
-image = load_image(source)
+def render_image_panel(key: str, image: np.ndarray, title: str, badge: str = "",
+                       footnote: str = "") -> None:
+    with st.container(key=key):
+        render_panel_heading(title, badge)
+        st.image(preview_image(image), width="content")
+        if footnote:
+            render_markup(f'<div class="panel-footnote">{escape(footnote)}</div>')
 
-if image is None:
-    st.error("⚠️ Could not decode the image. Please try a different file.")
-    st.stop()
 
-h, w = image.shape[:2]
-file_size_kb = len(source.getvalue()) / 1024
+def render_filter_controls() -> str:
+    return st.radio("Enhancement", tuple(ENHANCEMENT_LABELS),
+                    format_func=lambda value: ENHANCEMENT_LABELS[value],
+                    key="enhance_mode", horizontal=True)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Settings sidebar
-# ──────────────────────────────────────────────────────────────────────────────
 
-with st.sidebar:
-    st.markdown("### ⚙️ Settings")
+def scan_image(image: np.ndarray) -> None:
+    """Run the existing synchronous pipeline once and retain its real diagnostics."""
+    with st.container(key="processing_card"):
+        render_markup("""
+        <div class="processing-body" role="status" aria-live="polite">
+          <div class="processing-icon" aria-hidden="true">◌</div>
+          <h2>Rectifying Document Perspective...</h2>
+          <p>Analyzing the page boundary and calculating its perspective transform. Please wait.</p>
+        </div>
+        """)
+        diagnostic_buffer = io.StringIO()
+        pipeline_logger = logging.getLogger("scanner.pipeline")
+        previous_level = pipeline_logger.level
+        log_handler = logging.StreamHandler(diagnostic_buffer)
+        log_handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        pipeline_logger.addHandler(log_handler)
+        pipeline_logger.setLevel(logging.DEBUG)
+        try:
+            with st.spinner("Processing the selected image…"):
+                started = time.perf_counter()
+                result = run_full_pipeline(
+                    image,
+                    enhance_mode=st.session_state.enhance_mode,
+                    use_a4_ratio=st.session_state.use_a4_ratio,
+                )
+                elapsed = time.perf_counter() - started
+            st.session_state.result = result
+            st.session_state.elapsed = elapsed
+            st.session_state.rendered_mode = st.session_state.enhance_mode
+            st.session_state.diagnostics = diagnostic_buffer.getvalue()
+            st.session_state.scan_error = None
+        except Exception as exc:
+            st.session_state.result = None
+            st.session_state.scan_error = "The scan could not be completed. Try another image."
+            st.session_state.diagnostics = (
+                diagnostic_buffer.getvalue() +
+                f"\nProcessing error: {type(exc).__name__}: {exc}"
+            )
+        finally:
+            pipeline_logger.removeHandler(log_handler)
+            pipeline_logger.setLevel(previous_level)
+            st.session_state.is_processing = False
+    st.rerun()
 
-    st.markdown("**Output Enhancement**")
-    enhance_mode = st.selectbox(
-        "Enhancement mode",
-        options=["original", "grayscale", "bw_scan", "sharpen"],
-        format_func=lambda x: {
-            "original": "🖼️ Original (Color)",
-            "grayscale": "🌑 Grayscale",
-            "bw_scan": "📄 B&W Scanned Look",
-            "sharpen": "🔍 Sharpened",
-        }[x],
-        label_visibility="collapsed",
-    )
 
-    st.markdown("**A4 Aspect Ratio**")
-    use_a4 = st.toggle("Force A4 ratio", value=True,
-                        help="Enforce standard A4 (1:√2) aspect ratio on the output")
+def render_selected(image: np.ndarray) -> None:
+    render_selected_summary(image)
+    render_image_panel("source_panel", image, "Source document preview", "ORIGINAL RESOLUTION")
+    with st.container(key="controls_ribbon"):
+        options_col, actions_col = st.columns([3, 2], vertical_alignment="bottom")
+        with options_col:
+            render_filter_controls()
+            st.toggle("Force A4 ratio", value=True, key="use_a4_ratio",
+                      help="Set the rectified output to A4 proportions")
+        with actions_col:
+            replace_col, scan_col = st.columns(2)
+            with replace_col:
+                st.button("Choose different", on_click=open_picker, width="stretch")
+            with scan_col:
+                st.button("Scan & rectify", type="primary", on_click=request_scan,
+                          width="stretch", disabled=st.session_state.is_processing)
 
-    st.markdown("---")
-    st.markdown("**Pipeline Info**")
-    show_pipeline = st.toggle("Show pipeline steps", value=False,
-                              help="Display intermediate CV processing stages")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Preview uploaded image
-# ──────────────────────────────────────────────────────────────────────────────
+def render_technical_details(result) -> None:
+    with st.container(key="technical_details"):
+        with st.expander("Technical Diagnostics (OpenCV Candidates & ORB Homography)"):
+            if result is not None and result.detection is not None:
+                detection = result.detection
+                render_markup(f"""
+                <div class="technical-summary">
+                  <div><strong>Detector</strong><span>{escape(detection.method or 'none')}</span></div>
+                  <div><strong>ORB ratio-test matches</strong><span>{detection.orb_matches}</span></div>
+                  <div><strong>Detection message</strong><span>{escape(detection.message)}</span></div>
+                </div>
+                """)
+            if st.session_state.diagnostics:
+                lines = escape(st.session_state.diagnostics).replace("\n", "<br>")
+                render_markup(f'<div class="diagnostic-log">{lines}</div>')
+            if result is not None and result.detection is not None:
+                for name, debug_image in result.detection.debug_images.items():
+                    st.image(preview_image(debug_image),
+                             caption=name.replace("_", " ").title(), width="content")
+            if result is not None and result.homography is not None:
+                render_markup('<p class="technical-heading">Homography matrix</p>')
+                matrix = np.array2string(result.homography, precision=4, suppress_small=True)
+                lines = escape(matrix).replace("\n", "<br>")
+                render_markup(f'<div class="diagnostic-log diagnostic-matrix">{lines}</div>')
 
-render_steps(1)
 
-st.markdown(f"""
-<div class="metric-row">
-    <div class="metric-item">
-        <div class="label">Resolution</div>
-        <div class="value">{w} × {h}</div>
-    </div>
-    <div class="metric-item">
-        <div class="label">File Size</div>
-        <div class="value">{file_size_kb:.0f} KB</div>
-    </div>
-    <div class="metric-item">
-        <div class="label">Format</div>
-        <div class="value">{source.name.rsplit('.', 1)[-1].upper() if hasattr(source, 'name') and source.name else 'CAM'}</div>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+def render_success(image: np.ndarray, result) -> None:
+    selected_mode = st.session_state.enhance_mode
+    if selected_mode != st.session_state.rendered_mode and result.warped is not None:
+        result.enhanced = enhance_scan(result.warped, mode=selected_mode)
+        st.session_state.rendered_mode = selected_mode
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Process
-# ──────────────────────────────────────────────────────────────────────────────
+    output = result.enhanced
+    method = METHOD_LABELS.get(result.detection.method, result.detection.method.title())
+    elapsed = st.session_state.elapsed
+    render_status(True, "Document Rectified Successfully",
+                  (f"Method: {method}", f"Time: {elapsed:.2f}s",
+                   f"Output: {output.shape[1]} × {output.shape[0]} px"))
 
-scan_btn = st.button("🔍  Scan Document", use_container_width=True, type="primary")
+    with st.container(key="result_grid"):
+        left, right = st.columns(2, gap="medium")
+        with left:
+            corner_note = ""
+            if result.detection.corners is not None:
+                scale = min(1.0, 1500 / max(image.shape[:2]))
+                points = np.rint(result.detection.corners / scale).astype(int)
+                labels = ("TL", "TR", "BR", "BL")
+                corner_note = "   ".join(
+                    f"{label}: ({point[0]}, {point[1]})"
+                    for label, point in zip(labels, points)
+                )
+            render_image_panel("detected_panel", result.corners_overlay,
+                               "Detected Page Boundaries", "4 CORNERS VERIFIED", corner_note)
+        with right:
+            ratio_note = "A4 ratio enforced" if st.session_state.use_a4_ratio else "Original page ratio"
+            render_image_panel("rectified_panel", output,
+                               f"Rectified Output ({ENHANCEMENT_LABELS[selected_mode]})",
+                               "A4 · TOP-DOWN" if st.session_state.use_a4_ratio else "PAGE RATIO",
+                               ratio_note)
 
-if not scan_btn and "result" not in st.session_state:
-    # Show the original as a preview
-    st.image(to_pil(image), caption="Original image", width=PREVIEW_WIDTH)
-    st.stop()
+    with st.container(key="controls_ribbon"):
+        filter_col, action_col = st.columns([2, 3], vertical_alignment="bottom")
+        with filter_col:
+            render_filter_controls()
+        with action_col:
+            action_left, action_right = st.columns([1, 2])
+            with action_left:
+                st.button("Scan another document", on_click=reset_scan, width="stretch")
+            with action_right:
+                st.download_button("Download scanned document (.PNG)",
+                                   data=to_download_bytes(output),
+                                   file_name="scanned_document.png", mime="image/png",
+                                   type="primary", width="stretch")
+    render_technical_details(result)
 
-# Run the pipeline (or reuse cached result)
-if scan_btn:
-    with st.spinner("Detecting document and computing perspective transform…"):
-        t0 = time.perf_counter()
-        result = run_full_pipeline(
-            image,
-            enhance_mode=enhance_mode,
-            use_a4_ratio=use_a4,
-        )
-        elapsed = time.perf_counter() - t0
-        st.session_state["result"] = result
-        st.session_state["elapsed"] = elapsed
-        st.session_state["enhance_mode"] = enhance_mode
+
+def render_failure(image: np.ndarray | None, result) -> None:
+    render_status(False, "Unable to Locate Document Boundaries")
+    message = (result.message if result is not None else
+               st.session_state.scan_error or "Could not read this image file.")
+    with st.container(key="failure_grid"):
+        image_col, advice_col = st.columns(2, gap="medium")
+        with image_col:
+            if image is not None:
+                render_image_panel("source_panel", image, "Uploaded Image", "ORIGINAL PHOTO")
+        with advice_col:
+            with st.container(key="guidance_card"):
+                render_markup(f"""
+                <h3>How to improve scan detection</h3>
+                <p class="failure-intro">{escape(message)}</p>
+                <div class="tip-card"><strong>{CORNER_ICON} Keep margins around all 4 corners</strong><p>Leave some table surface visible on every side of the paper.</p></div>
+                <div class="tip-card"><strong>{BULB_ICON} Use a contrasting surface</strong><p>Separate the paper from the desk, especially near its edges.</p></div>
+                <div class="tip-card"><strong>{DOCUMENT_ICON} Avoid severe tilt and glare</strong><p>Hold the camera above the document in even, diffuse light.</p></div>
+                """)
+                retry_col, replace_col = st.columns(2)
+                with retry_col:
+                    st.button("Retry scan", type="primary", on_click=request_scan,
+                              disabled=image is None, width="stretch")
+                with replace_col:
+                    st.button("Choose another photo", on_click=open_picker, width="stretch")
+    render_technical_details(result)
+
+
+initialize_state()
+load_styles(st.session_state.dark_mode)
+render_header()
+
+data = st.session_state.source_bytes
+image = load_image(data)
+result = st.session_state.result
+
+if data is None:
+    state = "empty"
+elif image is None:
+    state = "failure"
+elif st.session_state.is_processing:
+    state = "processing"
+elif st.session_state.scan_error:
+    state = "failure"
+elif result is None:
+    state = "selected"
 else:
-    result = st.session_state["result"]
-    elapsed = st.session_state.get("elapsed", 0)
-    # Re-apply enhancement if mode changed
-    if enhance_mode != st.session_state.get("enhance_mode") and result.success and result.warped is not None:
-        from scanner.pipeline import enhance_scan
-        result.enhanced = enhance_scan(result.warped, mode=enhance_mode)
-        st.session_state["enhance_mode"] = enhance_mode
+    state = "success" if result.success else "failure"
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Results
-# ──────────────────────────────────────────────────────────────────────────────
+render_stepper(state)
 
-if not result.success:
-    render_steps(1)
+if data is None or st.session_state.picker_open:
+    render_picker()
+    if data is None:
+        render_tips()
+        st.stop()
 
-    st.markdown(f"""
-    <div class="status status-error">⚠ Detection failed</div>
-    """, unsafe_allow_html=True)
-
-    st.warning(f"**{result.message}**")
-
-    st.markdown("""
-    <div class="card">
-        <h3>💡 Tips to improve detection</h3>
-        <ul style="font-size:0.9rem; line-height:1.8;">
-            <li>Place the document on a <strong>contrasting background</strong> (dark desk, colored mat).</li>
-            <li>Ensure <strong>even lighting</strong> — avoid harsh shadows across the page.</li>
-            <li>Keep the <strong>entire document visible</strong> within the frame.</li>
-            <li>Flatten the paper to minimize <strong>curling or folding</strong>.</li>
-            <li>Avoid <strong>cluttered backgrounds</strong> with many edges.</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Still show original
-    st.image(to_pil(image), caption="Original image", width=PREVIEW_WIDTH)
-
-else:
-    render_steps(4)
-
-    st.markdown(f"""
-    <div class="status status-success">✓ Document scanned successfully</div>
-    """, unsafe_allow_html=True)
-
-    method_label = {
-        "contour": "Contour", "frame": "Full frame", "orb": "ORB",
-    }.get(result.detection.method if result.detection else "", "Unknown")
-    st.markdown(f"""
-    <div class="metric-row">
-        <div class="metric-item">
-            <div class="label">Method</div>
-            <div class="value">{method_label}</div>
-        </div>
-        <div class="metric-item">
-            <div class="label">Time</div>
-            <div class="value">{elapsed:.2f}s</div>
-        </div>
-        <div class="metric-item">
-            <div class="label">Output</div>
-            <div class="value">{result.enhanced.shape[1]}×{result.enhanced.shape[0]}</div>
-        </div>
-        {"" if not result.detection or result.detection.orb_matches == 0 else f'''
-        <div class="metric-item">
-            <div class="label">ORB Matches</div>
-            <div class="value">{result.detection.orb_matches}</div>
-        </div>
-        '''}
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Side-by-side comparison ──────────────────────────────────────────
-    col_orig, col_result = st.columns(2, gap="medium")
-
-    with col_orig:
-        st.markdown('<div class="img-label">📷 Detected Corners</div>', unsafe_allow_html=True)
-        st.image(to_pil(result.corners_overlay), width=PREVIEW_WIDTH)
-
-    with col_result:
-        mode_labels = {
-            "original": "🖼️ Rectified",
-            "grayscale": "🌑 Grayscale",
-            "bw_scan": "📄 B&W Scan",
-            "sharpen": "🔍 Sharpened",
-        }
-        label = mode_labels.get(enhance_mode, "Rectified")
-        st.markdown(f'<div class="img-label">{label} Output</div>', unsafe_allow_html=True)
-        st.image(to_pil(result.enhanced), width=PREVIEW_WIDTH)
-
-    # ── Download ─────────────────────────────────────────────────────────
-    st.markdown("")
-    dl_col1, dl_col2, dl_col3 = st.columns([1, 2, 1])
-    with dl_col2:
-        st.download_button(
-            label="⬇️  Download Scanned Document",
-            data=to_download_bytes(result.enhanced),
-            file_name="scanned_document.png",
-            mime="image/png",
-            use_container_width=True,
-        )
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Pipeline visualization (debug)
-# ──────────────────────────────────────────────────────────────────────────────
-
-if show_pipeline and result.detection and result.detection.debug_images:
-    st.markdown("---")
-    st.markdown("### 🔬 Pipeline Visualization")
-    st.caption("Intermediate processing stages for educational / debugging purposes.")
-
-    debug_imgs = result.detection.debug_images
-    step_names = {
-        "grayscale": "Grayscale Conversion",
-        "edges_auto": "Auto Canny Edges",
-        "edges_morphed": "Morphological Closing",
-        "edges_tight": "Tight Canny Edges",
-        "adaptive_threshold": "Adaptive Threshold",
-        "corners_detected": "Corners Detected",
-        "orb_keypoints": "ORB Keypoints",
-        "orb_corners_detected": "ORB-based Corners",
-    }
-
-    # Render in rows of 2-3
-    keys = list(debug_imgs.keys())
-    for i in range(0, len(keys), 3):
-        chunk = keys[i:i + 3]
-        cols = st.columns(len(chunk), gap="medium")
-        for col, key in zip(cols, chunk):
-            with col:
-                nice_name = step_names.get(key, key.replace("_", " ").title())
-                st.image(to_pil(debug_imgs[key]), caption=nice_name, width=PREVIEW_WIDTH)
-
-    # Show homography matrix
-    if result.homography is not None:
-        with st.expander("📐 Homography Matrix (3×3)"):
-            st.code(np.array2string(result.homography, precision=4, suppress_small=True))
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Footer
-# ──────────────────────────────────────────────────────────────────────────────
-
-st.markdown("---")
-st.markdown(
-    '<p class="footer-note" style="text-align:center; font-size:0.8rem;">'
-    'Built with OpenCV, Streamlit & ❤️ for CP461 — Introduction to Computer Vision'
-    '</p>',
-    unsafe_allow_html=True,
-)
+if state == "selected":
+    render_selected(image)
+elif state == "processing":
+    scan_image(image)
+elif state == "success":
+    render_success(image, result)
+elif state == "failure":
+    render_failure(image, result)

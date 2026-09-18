@@ -31,10 +31,12 @@ The four corners are ordered top-left, top-right, bottom-right, bottom-left befo
 ```text
 document-scanner/
 ├── app.py                   Streamlit interface
+├── frontend.py              Reusable UI markup and theme tokens
+├── frontend.css             Responsive production styles
 ├── scanner/
 │   ├── pipeline.py          Detection, rectification, enhancement
 │   └── utils.py             Geometry and image helpers
-├── tests/test_detection.py  Detection regression tests
+├── tests/                  Detection and frontend workflow tests
 ├── .streamlit/config.toml   Theme and upload settings
 ├── requirements.txt         Python dependencies
 └── LICENSE                  MIT license
@@ -70,10 +72,10 @@ python -m streamlit run app.py
 
 Open the local URL shown by Streamlit, usually `http://localhost:8501`. This is one Streamlit application; there is no separate backend service to start.
 
-1. Upload a JPG, JPEG, PNG, BMP, or WebP image, or take a photo with the camera control. The configured upload limit is 10 MB.
-2. Choose an enhancement mode and, if desired, turn off **Force A4 ratio** in the sidebar.
-3. Click **Scan Document**. Review the detected-corner overlay and rectified output.
-4. Download the PNG. Turn on **Show pipeline steps** in the sidebar to inspect intermediate images.
+1. Upload a JPG, JPEG, PNG, BMP, or WebP image, or open **Use webcam instead**. The configured upload limit is 10 MB.
+2. Review the selected image, choose an enhancement mode, and optionally turn off **Force A4 ratio**.
+3. Click **Scan & rectify**. Review the real detected-corner overlay and rectified output, or use the failure guidance to retry or replace the photo.
+4. Change the enhancement after scanning if needed, then download the PNG. **Scan another document** clears the current file and result. Expand **Technical details and pipeline images** for diagnostics.
 
 ## Input guidance and limitations
 
@@ -81,7 +83,7 @@ Keep all four page corners in the photo, with some visible background around the
 
 ## Detection settings and debugging
 
-The UI exposes the A4 output ratio and enhancement mode. `run_full_pipeline()` in `scanner/pipeline.py` also accepts `max_processing_dim` (default `1500`) for the detection working image. Detection thresholds and candidate checks are in `scanner/pipeline.py`; they are not runtime UI settings.
+The UI exposes the A4 output ratio before scanning and the enhancement mode before or after scanning. `run_full_pipeline()` in `scanner/pipeline.py` also accepts `max_processing_dim` (default `1500`) for the detection working image. Detection thresholds and candidate checks are in `scanner/pipeline.py`; they are not runtime UI settings.
 
 To print detector diagnostics in the terminal, set `DOCSCAN_DEBUG=1` before starting the app. In PowerShell:
 
@@ -90,7 +92,7 @@ $env:DOCSCAN_DEBUG = "1"
 python -m streamlit run app.py
 ```
 
-Logs include original and working dimensions, contour pass settings and counts, candidate geometry and rejection reasons, full-frame decisions, and ORB keypoint, descriptor, match, and inlier counts. Developer details stay out of normal user-facing error messages.
+Logs include original and working dimensions, contour pass settings and counts, candidate geometry and rejection reasons, full-frame decisions, and ORB keypoint, descriptor, match, and inlier counts. The UI also keeps this scan's logs behind **Technical details and pipeline images**; developer details stay out of the primary status message.
 
 Run the regression suite with:
 
