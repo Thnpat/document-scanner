@@ -10,6 +10,8 @@ and warp it to a clean, flat top-down A4 perspective.
 from __future__ import annotations
 
 import io
+import logging
+import os
 import time
 
 import cv2
@@ -18,6 +20,14 @@ import streamlit as st
 from PIL import Image
 
 from scanner.pipeline import run_full_pipeline
+
+if os.getenv("DOCSCAN_DEBUG") == "1":
+    scanner_logger = logging.getLogger("scanner.pipeline")
+    scanner_logger.setLevel(logging.DEBUG)
+    if not scanner_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        scanner_logger.addHandler(handler)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Page config

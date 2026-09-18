@@ -17,24 +17,14 @@ import numpy as np
 def order_points(pts: np.ndarray) -> np.ndarray:
     """Return four points in consistent order: [TL, TR, BR, BL].
 
-    Uses the sum (x+y) and difference (y-x) heuristic:
-    - Top-left has the *smallest* sum.
-    - Bottom-right has the *largest* sum.
-    - Top-right has the *smallest* difference.
-    - Bottom-left has the *largest* difference.
+    Sort around the center first so symmetric/rotated quads never reuse a point.
     """
     pts = pts.reshape(4, 2).astype(np.float32)
-    rect = np.zeros((4, 2), dtype=np.float32)
-
-    s = pts.sum(axis=1)
-    rect[0] = pts[np.argmin(s)]  # TL
-    rect[2] = pts[np.argmax(s)]  # BR
-
-    d = np.diff(pts, axis=1).ravel()
-    rect[1] = pts[np.argmin(d)]  # TR
-    rect[3] = pts[np.argmax(d)]  # BL
-
-    return rect
+    center = pts.mean(axis=0)
+    cyclic = pts[np.argsort(np.arctan2(pts[:, 1] - center[1],
+                                     pts[:, 0] - center[0]))]
+    start = np.lexsort((cyclic[:, 1], cyclic.sum(axis=1)))[0]
+    return np.roll(cyclic, -int(start), axis=0).copy()
 
 
 # ---------------------------------------------------------------------------
